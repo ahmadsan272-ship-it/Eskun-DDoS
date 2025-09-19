@@ -5,9 +5,26 @@ import threading
 import requests
 from colorama import init, Fore
 
-# Initialize Colorama for colored output
+# Inisialisasi colorama
 init(autoreset=True)
 
+Class ColorfulLoadTester:
+    def __init__(self):
+        self.result = []
+        self.lock = threading.Lock()
+        self.running = True
+
+    def print_banner(self):
+        """Tampilan banner"""
+        banner = """
+
+=========================================
+
+
+
+==================================
+"""
+        
 # Set the window title
 print(f"\033]0;Python DDOS V1.0 ", end="", flush=True)
 
