@@ -17,9 +17,9 @@ def __init__(self):
 def print_banner(self):
     """Tampilan banner"""
     banner = """
-
 =========================================
-
+f"{Fore.CYAN}=====
+f"{Fore{YELLOW}======
 
 
 ==================================
