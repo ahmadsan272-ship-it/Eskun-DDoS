@@ -9,14 +9,14 @@ from colorama import init, Fore
 init(autoreset=True)
 
 Class ColorfulLoadTester:
-    def __init__(self):
-        self.result = []
-        self.lock = threading.Lock()
-        self.running = True
+def __init__(self):
+    self.result = []
+    self.lock = threading.Lock()
+    self.running = True
 
-    def print_banner(self):
-        """Tampilan banner"""
-        banner = """
+def print_banner(self):
+    """Tampilan banner"""
+    banner = """
 
 =========================================
 
